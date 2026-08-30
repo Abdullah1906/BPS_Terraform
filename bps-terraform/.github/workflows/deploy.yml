@@ -1,0 +1,91 @@
+name: BPS .NET 8 Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  DOTNET_VERSION: "8.0.x"
+  AWS_REGION: ap-south-1
+  ARTIFACT_BUCKET: REPLACE_WITH_TERRAFORM_OUTPUT_ARTIFACT_BUCKET
+  ASG_NAME: REPLACE_WITH_TERRAFORM_OUTPUT_ASG_NAME
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore src/BPS.Api/BPS.Api.csproj
+
+      - name: Build
+        run: dotnet build src/BPS.Api/BPS.Api.csproj --configuration Release --no-restore
+
+      - name: Publish
+        run: |
+          rm -rf ./publish
+          dotnet publish src/BPS.Api/BPS.Api.csproj \
+            --configuration Release \
+            --output ./publish \
+            --no-restore
+
+      - name: Package
+        run: |
+          cd publish
+          zip -r ../bps-api-${GITHUB_SHA}.zip .
+
+      - name: Configure AWS credentials with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: REPLACE_WITH_TERRAFORM_OUTPUT_GITHUB_ACTIONS_ROLE_ARN
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload artifact
+        run: |
+          aws s3 cp \
+            "bps-api-${GITHUB_SHA}.zip" \
+            "s3://${ARTIFACT_BUCKET}/releases/bps-api-${GITHUB_SHA}.zip"
+
+      - name: Deploy to ASG instances through SSM
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --targets "Key=tag:Project,Values=bps" "Key=tag:Role,Values=api" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy BPS ${GITHUB_SHA}" \
+            --parameters commands='[
+              "set -e",
+              "mkdir -p /opt/bps/releases/${GITHUB_SHA}",
+              "aws s3 cp s3://'${ARTIFACT_BUCKET}'/releases/bps-api-'${GITHUB_SHA}'.zip /opt/bps/releases/bps-api-'${GITHUB_SHA}'.zip",
+              "unzip -oq /opt/bps/releases/bps-api-'${GITHUB_SHA}'.zip -d /opt/bps/releases/'${GITHUB_SHA}'",
+              "rm -rf /opt/bps/current.new",
+              "cp -a /opt/bps/releases/'${GITHUB_SHA}' /opt/bps/current.new",
+              "rm -rf /opt/bps/current",
+              "mv /opt/bps/current.new /opt/bps/current",
+              "systemctl daemon-reload",
+              "systemctl restart bps-api",
+              "systemctl is-active --quiet bps-api"
+            ]' \
+            --output text \
+            --query 'Command.CommandId')
+
+          echo "SSM Command ID: ${COMMAND_ID}"
+
+          sleep 10
+
+          aws ssm list-command-invocations \
+            --command-id "${COMMAND_ID}" \
+            --details

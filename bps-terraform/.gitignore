@@ -1,0 +1,12 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+terraform.tfvars
+crash.log
+crash.*.log
+publish/
+*.zip
+.env
+# Specific Folder Ignore
+src/

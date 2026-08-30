@@ -1,0 +1,49 @@
+#!/bin/bash
+set -euxo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y curl wget gnupg ca-certificates awscli
+
+curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+  | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+
+curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list \
+  | tee /etc/apt/sources.list.d/mssql-server-2022.list
+
+apt-get update
+apt-get install -y mssql-server
+
+SECRET_JSON="$(aws secretsmanager get-secret-value \
+  --secret-id "${sql_secret_arn}" \
+  --query SecretString \
+  --output text \
+  --region "${AWS_DEFAULT_REGION:-ap-south-1}")"
+
+MSSQL_SA_PASSWORD="$(echo "$SECRET_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])')"
+
+MSSQL_PID=Developer \
+ACCEPT_EULA=Y \
+MSSQL_SA_PASSWORD="$MSSQL_SA_PASSWORD" \
+/opt/mssql/bin/mssql-conf -n setup
+
+systemctl enable mssql-server
+systemctl restart mssql-server
+
+# Install SQL Server command-line tools.
+curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb \
+  -o /tmp/packages-microsoft-prod.deb
+
+dpkg -i /tmp/packages-microsoft-prod.deb || true
+
+apt-get update
+ACCEPT_EULA=Y apt-get install -y mssql-tools18 unixodbc-dev
+
+echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> /etc/profile.d/mssql-tools18.sh
+
+mkdir -p /var/opt/mssql/backup
+chmod 700 /var/opt/mssql/backup
+
+echo "SQL Server installation completed." \
+  > /var/opt/mssql/INSTALLATION_COMPLETE

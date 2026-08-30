@@ -1,0 +1,18 @@
+aws_region        = "ap-south-1"
+environment       = "dev"
+project_name      = "bps"
+
+instance_type     = "t3.micro"
+sql_instance_type = "t3.medium"
+sql_storage_gb    = 100
+
+min_size          = 2
+desired_capacity  = 2
+max_size          = 4
+
+app_port          = 5000
+health_check_path = "/health"
+
+github_org        = "YOUR_GITHUB_USERNAME_OR_ORG"
+github_repo       = "YOUR_BPS_REPO"
+github_branch     = "main"
